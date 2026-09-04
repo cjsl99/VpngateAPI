@@ -1,21 +1,36 @@
 import asyncio
 import os
+import urllib.request
 import yaml
 
+# 上游源地址
+SOURCE_URL = (
+    "https://raw.githubusercontent.com/sinspired/VpngateAPI/main/vpngate.yaml"
+)
 
-def load_nodes(file_path):
-    with open(file_path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+
+# 1. 下载并解析远程 YAML 文件
+def fetch_source_nodes(url):
+    print(f"正在从上游拉取节点列表: {url}")
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=15) as response:
+        content = response.read().decode("utf-8")
+        data = yaml.safe_load(content)
+
+    if isinstance(data, list):
+        return data
+    elif isinstance(data, dict):
+        return data.get("proxies", data.get("nodes", []))
+    return []
 
 
-# 异步测试 TCP / UDP 端口连通性
+# 2. 异步 TCP/UDP 连通性测试
 async def check_port(ip, port, proto="tcp", timeout=2.0):
     if not ip or not port:
         return False
-    port = int(port)
     try:
+        port = int(port)
         if str(proto).lower() == "udp":
-            # UDP 简单探测（建立 socket 试探）
             loop = asyncio.get_running_loop()
             transport, _ = await asyncio.wait_for(
                 loop.create_datagram_endpoint(
@@ -26,7 +41,6 @@ async def check_port(ip, port, proto="tcp", timeout=2.0):
             transport.close()
             return True
         else:
-            # TCP 建立连接
             conn = asyncio.open_connection(ip, port)
             _, writer = await asyncio.wait_for(conn, timeout=timeout)
             writer.close()
@@ -36,72 +50,78 @@ async def check_port(ip, port, proto="tcp", timeout=2.0):
         return False
 
 
-async def main():
-    input_file = "vpngate.yaml"  # 你的 2000+ 节点源文件名
-    if not os.path.exists(input_file):
-        print(f"未找到输入文件: {input_file}")
-        return
+# 3. 筛选并探测节点
+async def get_live_nodes(candidates, count=10, country_tag=""):
+    print(f"\n--- 开始测试 {country_tag} 节点 (目标: {count} 个活节点) ---")
+    live_list = []
 
-    nodes = load_nodes(input_file)
-    if not isinstance(nodes, list):
-        # 如果 yaml 嵌套在字典里，按实际结构调整，如 nodes = nodes.get('proxies', [])
-        print("YAML 结构非列表，请根据实际格式调整解析逻辑")
+    for node in candidates:
+        if len(live_list) >= count:
+            break
+
+        # 兼容各种 YAML 属性命名（IP/server/port/proto）
+        ip = node.get("IP") or node.get("ip") or node.get("server")
+        port = (
+            node.get("Port")
+            or node.get("port")
+            or node.get("openvpn_port", 1194)
+        )
+        proto = node.get("Proto") or node.get("proto", "tcp")
+
+        is_alive = await check_port(ip, port, proto, timeout=2.0)
+        if is_alive:
+            live_list.append(node)
+            print(
+                f"✓ [{country_tag} 存活] {node.get('name') or node.get('HostName') or ip}:{port} ({proto})"
+            )
+
+    return live_list
+
+
+async def main():
+    try:
+        nodes = fetch_source_nodes(SOURCE_URL)
+        print(f"成功获取节点总数: {len(nodes)}")
+    except Exception as e:
+        print(f"拉取节点失败: {e}")
         return
 
     jp_candidates = []
     kr_candidates = []
 
-    # 1. 过滤 JP / KR
-    for item in nodes:
-        # 兼容不同 YAML 属性命名习惯 (Country / country / country_code)
-        country = (
-            item.get("Country")
-            or item.get("country")
-            or item.get("CountryLong", "")
-        )
-        country_code = item.get("CountryShort") or country
+    # 按国家过滤 JP / KR
+    for node in nodes:
+        # 兼容不同的国家标识字段
+        country = str(
+            node.get("Country")
+            or node.get("country")
+            or node.get("CountryShort")
+            or node.get("CountryLong")
+            or node.get("name")
+            or ""
+        ).upper()
 
-        if "JP" in str(country_code).upper() or "JAPAN" in str(country).upper():
-            jp_candidates.append(item)
-        elif (
-            "KR" in str(country_code).upper() or "KOREA" in str(country).upper()
-        ):
-            kr_candidates.append(item)
+        if "JP" in country or "JAPAN" in country:
+            jp_candidates.append(node)
+        elif "KR" in country or "KOREA" in country:
+            kr_candidates.append(node)
 
-    print(f"筛选到 JP 节点 {len(jp_candidates)} 个，KR 节点 {len(kr_candidates)} 个")
+    print(f"找到 JP 候选节点: {len(jp_candidates)} 个")
+    print(f"找到 KR 候选节点: {len(kr_candidates)} 个")
 
-    # 2. 并发探测并各筛选 10 个活节点
-    async def filter_live_nodes(candidates, count=10):
-        live_list = []
-        for node in candidates:
-            if len(live_list) >= count:
-                break
-            ip = node.get("IP") or node.get("ip") or node.get("server")
-            port = node.get("Port") or node.get("port", 1194)
-            proto = node.get("Proto") or node.get("proto", "tcp")
+    # 并发测活并截取前 10 个
+    live_jp = await get_live_nodes(jp_candidates, 10, "JP")
+    live_kr = await get_live_nodes(kr_candidates, 10, "KR")
 
-            is_alive = await check_port(ip, port, proto, timeout=2.0)
-            if is_alive:
-                live_list.append(node)
-                print(
-                    f"✓ [存活] {node.get('CountryShort', 'NODE')} - {ip}:{port} ({proto})"
-                )
-        return live_list
+    # 合并输出为 YAML 格式
+    output_data = {"proxies": live_jp + live_kr}
 
-    print("\n--- 正在测试 JP 节点 ---")
-    live_jp = await filter_live_nodes(jp_candidates, 10)
-
-    print("\n--- 正在测试 KR 节点 ---")
-    live_kr = await filter_live_nodes(kr_candidates, 10)
-
-    # 3. 输出为精简版的 live_vpngate.yaml
-    output_data = {"jp_nodes": live_jp, "kr_nodes": live_kr}
-
-    with open("live_vpngate.yaml", "w", encoding="utf-8") as f:
+    output_file = "live_vpngate.yaml"
+    with open(output_file, "w", encoding="utf-8") as f:
         yaml.dump(output_data, f, allow_unicode=True, sort_keys=False)
 
     print(
-        f"\n完成！已挑选并保存 {len(live_jp)} 个 JP 节点和 {len(live_kr)} 个 KR 节点至 live_vpngate.yaml"
+        f"\n[完成] 已写入 {len(live_jp)} 个 JP 活节点和 {len(live_kr)} 个 KR 活节点至 {output_file}"
     )
 
 
