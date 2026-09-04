@@ -67,7 +67,7 @@ async def check_port(node, timeout=2.0):
 
 
 async def filter_live_nodes(candidates, count=10, country_tag=""):
-    print(f"\n--- 开始筛选 {country_tag} 节点 ---")
+    print(f"\n--- 开始筛选 {country_tag} 节点 (需 {count} 个) ---")
 
     # 按端口优先级排序候选节点
     sorted_candidates = sorted(candidates, key=get_node_priority)
@@ -123,7 +123,7 @@ async def main():
     live_jp, live_kr, live_others = await asyncio.gather(
         filter_live_nodes(jp_candidates, 10, "JP"),
         filter_live_nodes(kr_candidates, 10, "KR"),
-        filter_live_nodes(other_candidates, 10, "OTHERS"),
+        filter_live_nodes(other_candidates, 50, "OTHERS"),  # 此处调整为 50 个
     )
 
     all_live_nodes = live_jp + live_kr + live_others
