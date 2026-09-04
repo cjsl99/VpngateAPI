@@ -1,18 +1,18 @@
-name: VPNGate Health Check
+name: VPNGate Health Check & Filter
 
 on:
   schedule:
-    - cron: '0 */4 * * *'  # 每 4 小时自动触发一次测活
-  workflow_dispatch:      # 允许在 GitHub 界面手动点击触发
+    - cron: '0 */2 * * *'  # 每 2 小时自动运行一次测活
+  workflow_dispatch:      # 支持在 GitHub 页面手动点击触发运行
 
 jobs:
-  health-check:
+  check-nodes:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write     # 给予 GitHub Actions 写入/提交代码的权限
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout Repo
         uses: actions/checkout@v4
 
       - name: Set up Python
@@ -24,14 +24,14 @@ jobs:
         run: |
           pip install pyyaml
 
-      - name: Run Health Check Script
+      - name: Run Health Check
         run: |
           python check_vpngate.py
 
-      - name: Commit & Push Live Nodes
+      - name: Commit and Push live_vpngate.yaml
         run: |
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
           git add live_vpngate.yaml
-          git commit -m "auto: update live 10 JP & 10 KR vpngate nodes" || exit 0
+          git commit -m "auto: update 10 JP and 10 KR live vpngate nodes" || exit 0
           git push
