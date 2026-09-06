@@ -7,8 +7,11 @@ SOURCE_URL = (
 )
 PREFERRED_TCP_PORTS = {443, 80, 8443, 995, 1194, 1195}
 
-# 1. 热门亚太地区 (每国配额 5 个)
-POPULAR_APAC = {"JP", "KR", "TW", "HK", "SG", "TH", "VN", "ID", "PH", "MY"}
+# 免测直过、全量保留地区 (香港, 台湾, 澳门)
+DIRECT_ADD_REGIONS = {"HK", "TW", "MO"}
+
+# 1. 热门亚太地区 (每国配额 5 个，去除已直过的 HK, TW)
+POPULAR_APAC = {"JP", "KR", "SG", "TH", "VN", "ID", "PH", "MY"}
 
 # 2. 亚太以外热门地区 (每国配额 3 个)
 POPULAR_NON_APAC = {"US", "GB", "UK", "DE", "FR", "CA", "AU", "RU", "NL"}
@@ -111,13 +114,32 @@ async def main():
         f"解析到上游包含 {len(country_groups)} 个国家/地区的节点: {list(country_groups.keys())}"
     )
 
-    # 对所有国家的节点进行端口探针并发测试
-    print("\n--- 开始全网节点端口连通性并发测试 ---")
+    selected_nodes = []
+
+    # 1. 优先提取免测直过地区 (HK, TW, MO) 的全部节点
+    print("\n--- 提取免测直过地区 (HK, TW, MO) 的全部节点 ---")
+    for cc in sorted(DIRECT_ADD_REGIONS):
+        if cc in country_groups:
+            direct_nodes = country_groups[cc]
+            selected_nodes.extend(direct_nodes)
+            print(
+                f"★ [{cc} | 免测直过] 不测活直接提取全部 {len(direct_nodes)} 个节点"
+            )
+            for p in direct_nodes:
+                print(f"   └─ {p.get('name')}")
+
+    # 2. 对其它国家的节点进行端口探针并发测试
+    test_country_groups = {
+        cc: candidates
+        for cc, candidates in country_groups.items()
+        if cc not in DIRECT_ADD_REGIONS
+    }
+
+    print("\n--- 开始其余国家/地区节点端口连通性并发测试 ---")
     all_tasks = []
     node_to_cc_map = []
 
-    for cc, candidates in country_groups.items():
-        # 在检测前，先按端口优先级给候选节点排序
+    for cc, candidates in test_country_groups.items():
         sorted_candidates = sorted(candidates, key=get_node_priority)
         for node in sorted_candidates:
             all_tasks.append(check_port(node))
@@ -134,9 +156,6 @@ async def main():
             live_country_buckets[cc].append(node)
 
     # 按地区配额精细化选取节点
-    selected_nodes = []
-
-    # 为了让生成的 YAML 文件排版美观，按【热门亚太 -> 亚太外热门 -> 其它地区】顺序输出
     sorted_country_codes = sorted(
         live_country_buckets.keys(),
         key=lambda code: (
@@ -147,7 +166,7 @@ async def main():
         ),
     )
 
-    print("\n--- 节点选取与配额执行结果 ---")
+    print("\n--- 其它地区节点选取与配额执行结果 ---")
     for cc in sorted_country_codes:
         nodes_list = live_country_buckets[cc]
         limit, tier_name = get_country_limit(cc)
